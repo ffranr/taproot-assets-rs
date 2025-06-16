@@ -1,0 +1,3 @@
+[submodule "external/taproot-assets-upstream"]
+	path = external/taproot-assets-upstream
+	url = https://github.com/lightninglabs/taproot-assets
