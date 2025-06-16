@@ -13,7 +13,7 @@ readme = "README.md"
 repository = "https://github.com/ffranr/taproot-assets-rs"
 
 [dependencies]
-taproot-assets-rpc = { path = "../taproot-assets-rpc", optional = true }
+taproot-assets-rpc = { version = "0.0.1", path = "../taproot-assets-rpc", optional = true }
 tokio = { version = "1.37", features = ["macros", "rt-multi-thread"] }
 
 [features]

@@ -13,8 +13,9 @@ readme = "README.md"
 repository = "https://github.com/ffranr/taproot-assets-rs"
 
 [dependencies]
-taproot-assets-types = { path = "../../taproot-assets-types" }
-taproot-assets-zk-core = { path = "../../zk/taproot-assets-zk-core" }
+taproot-assets-rpc = { version = "0.0.1", path = "../../taproot-assets-rpc" }
+taproot-assets-types = { version = "0.0.1", path = "../../taproot-assets-types" }
+taproot-assets-zk-core = { version = "0.0.1", path = "../../zk/taproot-assets-zk-core" }
 
 bitcoin = "0.32.6"
 

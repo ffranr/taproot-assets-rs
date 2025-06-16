@@ -16,7 +16,7 @@ repository = "https://github.com/ffranr/taproot-assets-rs"
 default = []
 
 [dependencies]
-taproot-assets-types = { path = "../../taproot-assets-types", default-features = false }
+taproot-assets-types = { version = "0.0.1", path = "../../taproot-assets-types", default-features = false }
 
 bitcoin = { version = "0.32.6", default-features = false, features = ["serde"] }
 

@@ -23,7 +23,7 @@ entry!(main);
 
 fn main() {
     // Read input.
-    let input: core::mint::GuestInput = env::read();
+    let input: core::mint::VerifyMerkleProofInput = env::read();
 
     let ok = core::mint::verify_tx_merkle_proof(&input);
     env::commit(&ok);

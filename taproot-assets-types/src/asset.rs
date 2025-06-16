@@ -5,7 +5,7 @@ use core::convert::TryFrom;
 
 use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
@@ -173,7 +173,7 @@ pub struct AnchorInfo {
     /// The transaction that anchors the Taproot Asset commitment where the asset
     ///   resides.
     pub anchor_tx: bitcoin::Transaction,
-    /// The block hash the contains the anchor transaction above.
+    /// The hash of the block which contains the anchor transaction above.
     pub anchor_block_hash: BlockHash,
     /// The outpoint (txid:vout) that stores the Taproot Asset commitment.
     pub anchor_outpoint: OutPoint,
@@ -347,4 +347,184 @@ pub struct PrevWitness {
     pub tx_witness: Witness,
     /// Split commitment.
     pub split_commitment: Option<SplitCommitment>,
+}
+
+// TLV Types for Asset (based on Go's asset/records.go)
+const ASSET_LEAF_VERSION: crate::tlv::Type = crate::tlv::Type(0);
+const ASSET_LEAF_GENESIS: crate::tlv::Type = crate::tlv::Type(2);
+const ASSET_LEAF_AMOUNT: crate::tlv::Type = crate::tlv::Type(6);
+const ASSET_LEAF_LOCK_TIME: crate::tlv::Type = crate::tlv::Type(7);
+const ASSET_LEAF_RELATIVE_LOCK_TIME: crate::tlv::Type = crate::tlv::Type(9);
+const ASSET_LEAF_PREV_WITNESS: crate::tlv::Type = crate::tlv::Type(11);
+const ASSET_LEAF_SCRIPT_VERSION: crate::tlv::Type = crate::tlv::Type(14);
+const ASSET_LEAF_SCRIPT_KEY: crate::tlv::Type = crate::tlv::Type(16);
+const ASSET_LEAF_GROUP_KEY: crate::tlv::Type = crate::tlv::Type(17);
+const ASSET_LEAF_TYPE: crate::tlv::Type = crate::tlv::Type(4);
+
+impl Asset {
+    /// Decodes an Asset from a TLV byte slice.
+    pub fn decode_tlv<R: bitcoin::io::Read>(r: R) -> Result<Self, crate::error::Error> {
+        let mut stream = crate::tlv::Stream::new(r);
+        let mut version: Option<AssetVersion> = None;
+        let mut genesis: Option<GenesisInfo> = None;
+        let mut amount: Option<u64> = None;
+        let mut lock_time: Option<u64> = None;
+        let mut relative_lock_time: Option<u64> = None;
+        let mut prev_witnesses: Option<Vec<PrevWitness>> = None;
+        let mut script_version: Option<u16> = None;
+        let mut script_key: Option<Vec<u8>> = None;
+        let mut group_key: Option<AssetGroup> = None;
+        let mut unknown_odd_types = alloc::collections::BTreeMap::new();
+        let mut asset_type: Option<AssetType> = None;
+
+        while let Some(record) = stream
+            .next_record()
+            .map_err(crate::error::Error::TlvStream)?
+        {
+            match record.tlv_type() {
+                ASSET_LEAF_VERSION => {
+                    if record.value().len() != 1 {
+                        return Err(crate::error::Error::InvalidTlvValue(
+                            ASSET_LEAF_VERSION.0,
+                            String::from("Length must be 1 for version"),
+                        ));
+                    }
+                    version = Some(AssetVersion::from_u8(record.value()[0])?);
+                }
+                ASSET_LEAF_GENESIS => {
+                    genesis = Some(GenesisInfo {
+                        genesis_point: bitcoin::OutPoint::default(),
+                        name: String::new(),
+                        meta_hash: Sha256Hash::const_hash(&[]),
+                        asset_id: AssetID::const_hash(&[]),
+                        asset_type: asset_type.unwrap_or(AssetType::Normal),
+                        output_index: 0,
+                    });
+                }
+                ASSET_LEAF_AMOUNT => {
+                    // Decode varint for amount
+                    let mut cursor = bitcoin::io::Cursor::new(record.value());
+                    amount = Some(Self::read_varint(&mut cursor)?);
+                }
+                ASSET_LEAF_LOCK_TIME => {
+                    // Decode varint for lock time
+                    let mut cursor = bitcoin::io::Cursor::new(record.value());
+                    let lock_time_val = Self::read_varint(&mut cursor)?;
+                    lock_time = Some(lock_time_val);
+                }
+                ASSET_LEAF_RELATIVE_LOCK_TIME => {
+                    // Decode varint for relative lock time
+                    let mut cursor = bitcoin::io::Cursor::new(record.value());
+                    let relative_lock_time_val = Self::read_varint(&mut cursor)?;
+                    relative_lock_time = Some(relative_lock_time_val);
+                }
+                ASSET_LEAF_PREV_WITNESS => {
+                    // For now, we'll create an empty vector
+                    // TODO: Implement proper PrevWitness TLV decoding
+                    prev_witnesses = Some(Vec::new());
+                }
+                ASSET_LEAF_SCRIPT_VERSION => {
+                    if record.value().len() != 2 {
+                        return Err(crate::error::Error::InvalidTlvValue(
+                            ASSET_LEAF_SCRIPT_VERSION.0,
+                            String::from("Length must be 2 for script version"),
+                        ));
+                    }
+                    script_version =
+                        Some(u16::from_be_bytes([record.value()[0], record.value()[1]]));
+                }
+                ASSET_LEAF_SCRIPT_KEY => {
+                    script_key = Some(record.value().to_vec());
+                }
+                ASSET_LEAF_GROUP_KEY => {
+                    // For now, we'll create a simplified AssetGroup
+                    // TODO: Implement proper AssetGroup TLV decoding
+                    group_key = Some(AssetGroup {
+                        raw_group_key: record.value().to_vec(),
+                        tweaked_group_key: Vec::new(),
+                        asset_witness: Vec::new(),
+                        tapscript_root: None,
+                    });
+                }
+                ASSET_LEAF_TYPE => {
+                    if record.value().len() != 1 {
+                        return Err(crate::error::Error::InvalidTlvValue(
+                            ASSET_LEAF_TYPE.0,
+                            String::from("Length must be 1 for asset type"),
+                        ));
+                    }
+                    asset_type = Some(match record.value()[0] {
+                        0 => AssetType::Normal,
+                        1 => AssetType::Collectible,
+                        _ => {
+                            return Err(crate::error::Error::InvalidTlvValue(
+                                ASSET_LEAF_TYPE.0,
+                                format!("Unknown asset type: {}", record.value()[0]),
+                            ))
+                        }
+                    });
+                }
+                type_val => {
+                    if type_val.is_odd() {
+                        unknown_odd_types.insert(type_val.0, record.value().to_vec());
+                    } else {
+                        return Err(crate::error::Error::UnknownTlvType(type_val.0));
+                    }
+                }
+            }
+        }
+
+        Ok(Asset {
+            version: version.ok_or(crate::error::Error::MissingTlvField(
+                "Asset.version".to_string(),
+            ))?,
+            asset_genesis: genesis,
+            amount: amount.unwrap_or(0),
+            lock_time: lock_time.map(|v| v as i32).unwrap_or(0),
+            relative_lock_time: relative_lock_time.map(|v| v as i32).unwrap_or(0),
+            script_version: script_version.map(|v| v as i32).unwrap_or(0),
+            script_key: script_key.unwrap_or_default(),
+            script_key_is_local: false, // Not encoded in TLV
+            asset_group: group_key,
+            chain_anchor: None, // Not encoded in TLV
+            prev_witnesses: prev_witnesses.unwrap_or_default(),
+            is_spent: false,                         // Not encoded in TLV
+            lease_owner: Vec::new(),                 // Not encoded in TLV
+            lease_expiry: 0,                         // Not encoded in TLV
+            is_burn: false,                          // Not encoded in TLV
+            script_key_declared_known: false,        // Not encoded in TLV
+            script_key_has_script_path: false,       // Not encoded in TLV
+            decimal_display: None,                   // Not encoded in TLV
+            script_key_type: ScriptKeyType::Unknown, // Not encoded in TLV
+        })
+    }
+
+    /// Reads a variable-length integer from a reader.
+    fn read_varint<R: bitcoin::io::Read>(r: &mut R) -> Result<u64, crate::error::Error> {
+        let mut first_byte = [0u8; 1];
+        r.read_exact(&mut first_byte)
+            .map_err(crate::error::Error::Io)?;
+
+        match first_byte[0] {
+            253 => {
+                let mut u16_bytes = [0u8; 2];
+                r.read_exact(&mut u16_bytes)
+                    .map_err(crate::error::Error::Io)?;
+                Ok(u16::from_be_bytes(u16_bytes) as u64)
+            }
+            254 => {
+                let mut u32_bytes = [0u8; 4];
+                r.read_exact(&mut u32_bytes)
+                    .map_err(crate::error::Error::Io)?;
+                Ok(u32::from_be_bytes(u32_bytes) as u64)
+            }
+            255 => {
+                let mut u64_bytes = [0u8; 8];
+                r.read_exact(&mut u64_bytes)
+                    .map_err(crate::error::Error::Io)?;
+                Ok(u64::from_be_bytes(u64_bytes))
+            }
+            _ => Ok(first_byte[0] as u64),
+        }
+    }
 }

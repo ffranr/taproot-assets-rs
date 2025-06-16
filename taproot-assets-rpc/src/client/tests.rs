@@ -71,7 +71,7 @@ async fn test_connect_tapd_listassets() -> Result<()> {
 async fn test_connect_tapd_fetch_proof() -> Result<()> {
     init_logger();
 
-    let root_dir = "/tmp/itest-tapd1008637313";
+    let root_dir = "/tmp/itest-tapd845014239";
     let tls_cert_path = "/home/user/tapd-itest-cert/tls_ca.cert";
 
     let macaroon_path = format!("{}/data/regtest/admin.macaroon", root_dir);
@@ -118,21 +118,38 @@ async fn test_connect_tapd_fetch_proof() -> Result<()> {
         export_resp.raw_proof_file.len()
     );
 
+    // Write the raw proof file to a binary file.
+    let raw_proof_file_path = "/home/user/dev/tmp/itest-proof-file.bin";
+    let mut raw_file = File::create(raw_proof_file_path)?;
+    raw_file.write_all(&export_resp.raw_proof_file)?;
+    log::info!("Wrote raw proof to file: {:?}", raw_proof_file_path);
+
     log::info!("Decoding raw proof file");
     let decode_resp = client
-        .verify_proof(export_resp.raw_proof_file, export_resp.genesis_point)
+        .verify_proof(
+            export_resp.raw_proof_file.clone(),
+            export_resp.genesis_point,
+        )
         .await?;
     log::info!("retreived decoded proof: valid={:?}", decode_resp.valid);
 
     // Unpack the proof.
     let proof = decode_resp.decoded_proof.unwrap();
 
+    print!("proof: {:?}", proof);
+
     // Write/dump the proof to a binary file.
-    let proof_file_path = "/home/user/dev/tmp/itest-proof.bin";
+    let proof_file_path = "/home/user/dev/tmp/itest-decoded-proof.bin";
     let encoded = encode_to_vec(&proof, standard()).unwrap();
     let mut file = File::create(proof_file_path)?;
     file.write_all(&encoded)?;
     log::info!("Wrote proof to file: {:?}", proof_file_path);
+
+    // Also save the raw proof file for TLV decoding tests
+    let raw_proof_file_path = "/home/user/dev/tmp/itest-proof-raw.bin";
+    let mut raw_file = File::create(raw_proof_file_path)?;
+    raw_file.write_all(&export_resp.raw_proof_file)?;
+    log::info!("Wrote raw proof to file: {:?}", raw_proof_file_path);
 
     Ok(())
 }

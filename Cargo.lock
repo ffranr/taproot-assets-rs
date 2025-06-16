@@ -3633,6 +3633,7 @@ dependencies = [
  "rand 0.9.1",
  "risc0-zkvm",
  "serde",
+ "taproot-assets-rpc",
  "taproot-assets-types",
  "taproot-assets-zk-core",
 ]

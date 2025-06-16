@@ -376,7 +376,7 @@ impl TryFrom<taprpc::GroupKeyReveal> for types::asset::GroupKeyReveal {
     }
 }
 
-impl TryFrom<taprpc::DecodedProof> for types::proof::Proof {
+impl TryFrom<taprpc::DecodedProof> for crate::taprpc::types::DecodedProof {
     type Error = ConversionError;
 
     fn try_from(value: taprpc::DecodedProof) -> Result<Self> {
@@ -416,7 +416,7 @@ impl TryFrom<taprpc::DecodedProof> for types::proof::Proof {
                 ConversionError::Other(format!("Failed to decode tx merkle proof: {}", e))
             })?;
 
-        Ok(types::proof::Proof {
+        Ok(crate::taprpc::types::DecodedProof {
             proof_at_depth: value.proof_at_depth,
             number_of_proofs: value.number_of_proofs,
             asset: value

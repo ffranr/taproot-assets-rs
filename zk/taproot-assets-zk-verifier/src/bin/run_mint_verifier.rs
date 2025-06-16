@@ -1,47 +1,48 @@
-use risc0_zkvm::{default_prover, ExecutorEnv};
-use std::path::Path;
 use taproot_assets_types as types;
 
-use bincode::config::standard;
-use bincode::serde::decode_from_slice;
-
-use taproot_assets_zk_core as core;
+use taproot_assets_zk_core as zk_core;
 
 use bitcoin::hashes::Hash;
 
 fn main() -> anyhow::Result<()> {
     // Read the proof from a file.
-    let proof_file_path = "/home/user/dev/tmp/itest-proof.bin";
-    let proof_bytes = std::fs::read(proof_file_path)?;
-    let (asset_state_proof, _) =
-        decode_from_slice::<types::proof::Proof, _>(&proof_bytes, standard())?;
+    let proof_file_path = "/home/user/dev/tmp/itest-proof-file.bin";
+    let proof_file_bytes = std::fs::read(proof_file_path)?;
 
-    let anchor_info = asset_state_proof.asset.chain_anchor.unwrap();
+    let proof_file = types::proof::File::from_bytes(&proof_file_bytes)?;
 
-    println!(
-        "number of proof nodes: {}",
-        asset_state_proof.tx_merkle_proof.nodes.len()
-    );
-    println!(
-        "number of proof direction bits: {}",
-        asset_state_proof.tx_merkle_proof.bits.len()
-    );
+    println!("number of proofs: {}", proof_file.proofs.len());
 
-    let input = core::mint::GuestInput {
-        txid: anchor_info.anchor_tx.compute_txid().to_byte_array(),
-        proof: core::mint::TxMerkleProof {
-            nodes: asset_state_proof
-                .tx_merkle_proof
-                .nodes
-                .into_iter()
-                .map(|node| node.to_byte_array())
-                .collect(),
-            bits: vec![false], //asset_state_proof.tx_merkle_proof.bits,
-        },
-        merkle_root: anchor_info.merkle_root.to_byte_array(),
+    let hashed_proof = &proof_file.proofs[0];
+    let proof = types::proof::Proof::from_bytes(&hashed_proof.proof_bytes)?;
+    println!("proof: {:?}", proof);
+
+    let block_merkle_root = proof.block_header.merkle_root;
+    println!("block merkle root: {}", block_merkle_root);
+
+    let merkle_proof_node = proof.tx_merkle_proof.nodes[0];
+    println!("merkle proof node: {}", merkle_proof_node);
+
+    let txid = proof.anchor_tx.compute_txid();
+    println!("anchor txid: {}", txid);
+
+    let tx_merkle_proof_raw = zk_core::mint::TxMerkleProof {
+        nodes: proof
+            .tx_merkle_proof
+            .nodes
+            .into_iter()
+            .map(|node| node.to_byte_array())
+            .collect(),
+        bits: proof.tx_merkle_proof.bits,
     };
 
-    let ok = core::mint::verify_tx_merkle_proof(&input);
+    let input = zk_core::mint::VerifyMerkleProofInput {
+        txid: txid.to_byte_array(),
+        proof: tx_merkle_proof_raw,
+        merkle_root: proof.block_header.merkle_root.to_byte_array(),
+    };
+
+    let ok = zk_core::mint::verify_tx_merkle_proof(&input);
     println!("Proof verified? {ok}");
 
     // // Executor environment (the bytes become guest stdin).
