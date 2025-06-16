@@ -1,0 +1,22 @@
+[package]
+name = "taproot-assets"
+version = "0.0.1"
+edition = "2021"
+publish = true
+
+categories = ["cryptography::cryptocurrencies"]
+keywords = ["bitcoin", "taproot", "assets", "lightning", "sdk"]
+description = "High-level Rust SDK bundling Taproot-Asset types, RPC client, and more."
+
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/ffranr/taproot-assets-rs"
+
+[dependencies]
+taproot-assets-rpc = { path = "../taproot-assets-rpc", optional = true }
+tokio = { version = "1.37", features = ["macros", "rt-multi-thread"] }
+
+[features]
+default = ["rpc", "std"]
+std = []
+rpc = ["taproot-assets-rpc"]

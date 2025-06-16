@@ -1,0 +1,25 @@
+[package]
+name = "taproot-assets-zk-core"
+version = "0.0.1"
+edition = "2021"
+publish = true
+
+categories = ["cryptography", "cryptography::cryptocurrencies"]
+keywords = ["bitcoin", "taproot", "zkp", "zero-knowledge", "proofs"]
+description = "Core traits, types, and logic for Taproot Assets zero-knowledge proofs"
+
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/ffranr/taproot-assets-rs"
+
+[features]
+default = []
+
+[dependencies]
+taproot-assets-types = { path = "../../taproot-assets-types", default-features = false }
+
+bitcoin = { version = "0.32.6", default-features = false, features = ["serde"] }
+
+risc0-zkvm = { version = "2.0.2", default-features = false }
+
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }

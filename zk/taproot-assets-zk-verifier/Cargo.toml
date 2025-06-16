@@ -1,0 +1,33 @@
+[package]
+name = "taproot-assets-zk-verifier"
+version = "0.0.1"
+edition = "2021"
+publish = true
+
+categories = ["cryptography", "cryptography::cryptocurrencies"]
+keywords = ["bitcoin", "taproot", "zkp", "verifier", "proofs"]
+description = "Rust verifier for Taproot Assets zero-knowledge proofs"
+
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/ffranr/taproot-assets-rs"
+
+[dependencies]
+taproot-assets-types = { path = "../../taproot-assets-types" }
+taproot-assets-zk-core = { path = "../../zk/taproot-assets-zk-core" }
+
+bitcoin = "0.32.6"
+
+risc0-zkvm = { version = "2.0.2", features = ["prove"] }
+
+bincode = { version = "2.0.1", features = ["serde"] }
+serde = "1.0"
+
+hex = "0.4"
+rand = "0.9.1"
+
+anyhow = "1.0"
+
+[[bin]]
+name = "run_mint_verifier"
+path = "src/bin/run_mint_verifier.rs"

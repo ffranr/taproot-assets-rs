@@ -1,0 +1,29 @@
+[package]
+name = "taproot-assets-types"
+version = "0.0.1"
+edition = "2021"
+publish = true
+
+categories = ["cryptography::cryptocurrencies"]
+keywords = [
+  "bitcoin",
+  "taproot",
+  "assets",
+  "lightning",
+  "sdk",
+  "serialization",
+  "types",
+]
+description = "Shared data types and serialization logic for Taproot Assets"
+
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/ffranr/taproot-assets-rs"
+
+[features]
+default = []
+
+[dependencies]
+bitcoin = { version = "0.32.6", default-features = false, features = ["serde"] }
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+thiserror = { version = "2.0.12", default-features = false }
