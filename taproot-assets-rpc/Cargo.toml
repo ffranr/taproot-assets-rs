@@ -5,7 +5,7 @@ edition = "2021"
 publish = true
 
 categories = ["cryptography::cryptocurrencies"]
-keywords = ["bitcoin", "taproot", "assets", "lightning", "sdk", "rpc"]
+keywords = ["bitcoin", "taproot", "assets", "lightning", "rpc"]
 description = "Taproot Assets gRPC client"
 
 license = "MIT OR Apache-2.0"
