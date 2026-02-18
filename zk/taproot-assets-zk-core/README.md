@@ -10,6 +10,7 @@ and designed for integration with proof systems such as
 ## Claims
 
 Claim types are split into:
+- Proof-chain claim: verifies proof-file checksum continuity and prev-out linkage.
 - Anchor claim: validates anchor transaction inclusion and returns taproot output keys.
 - Taproot claim: proves asset commitment inclusion or exclusion for a taproot output.
 - STXO claim: proves state transition against a taproot output and proof version.
