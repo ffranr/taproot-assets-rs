@@ -2,7 +2,8 @@
 
 This workspace provides Rust crates for working with the
 [Taproot Assets protocol](https://github.com/lightninglabs/taproot-assets),
-including shared types, a gRPC client, and zero-knowledge proof components.
+including shared types, core verification logic, a gRPC client, and
+zero-knowledge proof components.
 
 It does **not** implement the protocol itself.
 
@@ -11,6 +12,7 @@ It does **not** implement the protocol itself.
 ```text
 taproot-assets-rs/
 ├── taproot-assets             # High-level SDK crate
+├── taproot-assets-core        # Core proof verification logic (no-std)
 ├── taproot-assets-types       # Shared types and serialization logic
 ├── taproot-assets-rpc         # gRPC client bindings for the Taproot Assets daemon
 └── zk/
@@ -21,7 +23,8 @@ taproot-assets-rs/
         ├── taproot-commitment-prover  # ZK guest for taproot commitment proofs
         ├── stxo-claim-prover          # ZK guest for STXO proof verification
         ├── asset-claim-prover         # ZK guest for asset integrity (genesis/meta/group key)
-        └── join-prover                # ZK guest for receipt composition (WIP)
+        ├── proof-chain-claim-prover   # ZK guest for proof-file continuity/checksum claims
+        └── join-prover                # ZK guest for receipt composition and consistency checks
 ```
 
 ## Status
@@ -31,7 +34,8 @@ APIs and internal structure may change without notice.
 
 ## ZK Progress
 
-- Proof verification is partitioned into anchor, taproot, stxo, asset, and join claims.
+- Proof verification is partitioned into proof-chain, anchor, taproot, stxo, asset, and join claims.
+- Proof-chain verification checks checksum continuity and previous-outpoint linkage across proof files.
 - Join verification enforces output coverage and output-index consistency across claims.
 - Core vectors live in `external/taproot-assets-upstream/proof/testdata` and are exercised by
   `cargo test -p taproot-assets-core --test proof_vectors` (skips if vectors are missing).
