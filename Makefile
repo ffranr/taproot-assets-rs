@@ -1,4 +1,5 @@
-.PHONY: all build-all build build-rpc build-zk vendor-proto build-tests fmt
+.PHONY: all build-all build build-rpc build-zk vendor-proto check-protoc \
+	build-tests test test-local test-integration test-all publish-dry-run fmt
 
 all: build-all
 
@@ -19,6 +20,17 @@ build: build-rpc build-tests
 # This will build all guest packages in the workspace.
 GUEST_PROFILE_ENV := CARGO_PROFILE_RELEASE_OPT_LEVEL=z CARGO_PROFILE_RELEASE_LTO=true \
 	CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 CARGO_PROFILE_RELEASE_STRIP=symbols
+
+TEST_EXCLUDES_BASE := \
+	--exclude anchor-claim-prover \
+	--exclude taproot-commitment-prover \
+	--exclude join-prover \
+	--exclude stxo-claim-prover \
+	--exclude asset-claim-prover \
+	--exclude proof-chain-claim-prover \
+	--exclude taproot-assets-zk-core
+
+TEST_EXCLUDES_LOCAL := $(TEST_EXCLUDES_BASE) --exclude taproot-assets-rpc
 
 build-zk:
 	@echo "Building zk guest: anchor-claim-prover"
@@ -63,7 +75,21 @@ build-rpc: vendor-proto check-protoc
 	@cargo build -p taproot-assets-rpc --features build-protos
 
 build-tests:
-	@cargo test --no-run --workspace --exclude anchor-claim-prover --exclude taproot-commitment-prover --exclude join-prover --exclude stxo-claim-prover --exclude asset-claim-prover --exclude proof-chain-claim-prover --exclude taproot-assets-zk-core
+	@cargo test --no-run --workspace $(TEST_EXCLUDES_BASE)
+
+# Run the default local test suite (excludes tapd integration tests).
+test: test-local
+
+# Run all local tests that don't require external services or prebuilt zk guests.
+test-local:
+	@cargo test --workspace $(TEST_EXCLUDES_LOCAL)
+
+# Run integration tests that require a live tapd setup and TLS/macaroon files.
+test-integration:
+	@cargo test -p taproot-assets-rpc --lib
+
+# Run local tests plus integration tests.
+test-all: test-local test-integration
 
 publish-dry-run:
 	@echo "Publishing dry run"
