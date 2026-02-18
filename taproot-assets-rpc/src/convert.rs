@@ -1,7 +1,7 @@
 use crate::taprpc;
 use taproot_assets_types as types;
 
-use bitcoin::hashes::{sha256::Hash as Sha256Hash, Hash};
+use bitcoin::hashes::{Hash, sha256::Hash as Sha256Hash};
 use bitcoin::{BlockHash, OutPoint, Witness};
 use std::convert::{TryFrom, TryInto};
 use std::str::FromStr;
@@ -223,6 +223,7 @@ impl TryFrom<taprpc::Asset> for types::asset::Asset {
             asset_group: try_option(value.asset_group)?,
             chain_anchor: try_option(value.chain_anchor)?,
             prev_witnesses: try_vec(value.prev_witnesses)?,
+            split_commitment_root: None,
             is_spent: value.is_spent,
             lease_owner: value.lease_owner,
             lease_expiry: value.lease_expiry,
@@ -246,16 +247,17 @@ impl TryFrom<taprpc::SplitCommitment> for types::asset::SplitCommitment {
     type Error = ConversionError;
 
     fn try_from(value: taprpc::SplitCommitment) -> Result<Self> {
-        let root_asset = match value.root_asset {
-            Some(rpc_asset) => {
-                let domain_asset: types::asset::Asset = rpc_asset
-                    .try_into()
-                    .map_err(|e: ConversionError| ConversionError::RecursiveError(Box::new(e)))?;
-                Some(Box::new(domain_asset))
-            }
-            None => None,
-        };
-        Ok(types::asset::SplitCommitment { root_asset })
+        let rpc_asset = value.root_asset.ok_or_else(|| {
+            ConversionError::MissingField("SplitCommitment.root_asset".to_string())
+        })?;
+        let domain_asset: types::asset::Asset = rpc_asset
+            .try_into()
+            .map_err(|e: ConversionError| ConversionError::RecursiveError(Box::new(e)))?;
+        let proof = types::mssmt::MssmtProof { nodes: Vec::new() };
+        Ok(types::asset::SplitCommitment {
+            proof,
+            root_asset: Box::new(domain_asset),
+        })
     }
 }
 
@@ -263,8 +265,30 @@ impl TryFrom<taprpc::PrevWitness> for types::asset::PrevWitness {
     type Error = ConversionError;
 
     fn try_from(value: taprpc::PrevWitness) -> Result<Self> {
+        let prev_id = value
+            .prev_id
+            .map(|prev| {
+                let out_point =
+                    string_to_outpoint(prev.anchor_point, "PrevInputAsset.anchor_point")?;
+                let asset_id = vec_to_sha256hash(prev.asset_id, "PrevInputAsset.asset_id")?;
+                if prev.script_key.len() != 33 {
+                    return Err(ConversionError::InvalidHashBytes(format!(
+                        "Invalid PrevInputAsset.script_key length: {}",
+                        prev.script_key.len()
+                    )));
+                }
+                let mut key_bytes = [0u8; 33];
+                key_bytes.copy_from_slice(&prev.script_key);
+                Ok(types::asset::PrevId {
+                    out_point,
+                    asset_id,
+                    script_key: types::asset::SerializedKey { bytes: key_bytes },
+                })
+            })
+            .transpose()?;
+
         Ok(types::asset::PrevWitness {
-            prev_id: try_option(value.prev_id)?,
+            prev_id,
             tx_witness: Witness::from(value.tx_witness),
             split_commitment: try_option(value.split_commitment)?,
         })
@@ -360,6 +384,14 @@ impl TryFrom<taprpc::GroupKeyReveal> for types::asset::GroupKeyReveal {
     type Error = ConversionError;
 
     fn try_from(value: taprpc::GroupKeyReveal) -> Result<Self> {
+        if value.raw_group_key.len() != 33 {
+            return Err(ConversionError::InvalidHashBytes(format!(
+                "Invalid GroupKeyReveal.raw_group_key length: {}",
+                value.raw_group_key.len()
+            )));
+        }
+        let mut key_bytes = [0u8; 33];
+        key_bytes.copy_from_slice(&value.raw_group_key);
         let tapscript_root = if value.tapscript_root.is_empty() {
             None
         } else {
@@ -370,8 +402,10 @@ impl TryFrom<taprpc::GroupKeyReveal> for types::asset::GroupKeyReveal {
         };
 
         Ok(types::asset::GroupKeyReveal {
-            raw_group_key: value.raw_group_key,
+            raw_group_key: types::asset::SerializedKey { bytes: key_bytes },
             tapscript_root,
+            version: None,
+            custom_subtree_root: None,
         })
     }
 }

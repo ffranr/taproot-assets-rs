@@ -1,5 +1,8 @@
 use crate::error::Error;
+use bitcoin::consensus::encode::serialize;
+use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
+use bitcoin::io::Read;
 use bitcoin::{BlockHash, OutPoint, Witness};
 use core::convert::TryFrom;
 
@@ -7,9 +10,78 @@ use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 pub type AssetID = Sha256Hash;
+
+/// Serialized compressed public key bytes used as a stable map key.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct SerializedKey {
+    /// Raw compressed public key bytes.
+    pub bytes: [u8; 33],
+}
+
+impl Serialize for SerializedKey {
+    /// Serializes the key as a byte slice.
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_bytes(&self.bytes)
+    }
+}
+
+impl<'de> Deserialize<'de> for SerializedKey {
+    /// Deserializes the key from a byte slice.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct BytesVisitor;
+
+        impl<'de> de::Visitor<'de> for BytesVisitor {
+            type Value = SerializedKey;
+
+            fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
+                formatter.write_str("33 bytes")
+            }
+
+            fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                if v.len() != 33 {
+                    return Err(E::invalid_length(v.len(), &"33 bytes"));
+                }
+                let mut array = [0u8; 33];
+                array.copy_from_slice(v);
+                Ok(SerializedKey { bytes: array })
+            }
+
+            fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                self.visit_bytes(&v)
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: de::SeqAccess<'de>,
+            {
+                let mut bytes = [0u8; 33];
+                for i in 0..33 {
+                    bytes[i] = seq
+                        .next_element()?
+                        .ok_or_else(|| de::Error::invalid_length(i, &"33 bytes"))?;
+                }
+                Ok(SerializedKey { bytes })
+            }
+        }
+
+        deserializer.deserialize_bytes(BytesVisitor)
+    }
+}
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[repr(u8)]
@@ -199,15 +271,25 @@ pub struct AnchorInfo {
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 /// Represents a previous input asset.
 pub struct PrevInputAsset {
-    /// The old/current location of the Taproot Asset commitment that was spent
-    /// as an input.
+    /// The previous input's anchor point (txid:vout).
     pub anchor_point: OutPoint,
-    /// The ID of the asset that was spent.
+    /// The asset ID of the asset that was spent as an input.
     pub asset_id: AssetID,
-    /// The script key of the asset that was spent.
+    /// The script key of the asset that was spent as an input.
     pub script_key: Vec<u8>,
-    /// The amount of the asset that was spent.
+    /// The amount of the asset that was spent as an input.
     pub amount: u64,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
+/// Reference to an asset's previous input.
+pub struct PrevId {
+    /// The Bitcoin-level outpoint anchoring the asset state.
+    pub out_point: OutPoint,
+    /// The TAP-level asset identifier.
+    pub asset_id: AssetID,
+    /// The TAP-level serialized script key that committed to the asset.
+    pub script_key: SerializedKey,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -253,6 +335,8 @@ pub struct Asset {
     pub chain_anchor: Option<AnchorInfo>,
     /// Previous witnesses for the asset.
     pub prev_witnesses: Vec<PrevWitness>,
+    /// The root node of the MS-SMT storing split commitments, if present.
+    pub split_commitment_root: Option<crate::mssmt::MssmtNode>,
     /// Indicates whether the asset has been spent.
     pub is_spent: bool,
     /// If the asset has been leased, this is the owner (application ID) of the
@@ -325,24 +409,207 @@ pub struct GenesisReveal {
     pub meta_reveal: Option<AssetMeta>,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[repr(u8)]
+/// The version of the group key reveal non-spendable leaf.
+pub enum NonSpendLeafVersion {
+    /// Version that commits via an OP_RETURN.
+    OpReturn = 1,
+    /// Version that commits via a Pedersen commitment.
+    Pedersen = 2,
+}
+
+impl NonSpendLeafVersion {
+    /// Parses a raw version byte into a `NonSpendLeafVersion`.
+    pub(crate) fn from_u8(value: u8) -> Result<Self, Error> {
+        match value {
+            1 => Ok(NonSpendLeafVersion::OpReturn),
+            2 => Ok(NonSpendLeafVersion::Pedersen),
+            _ => Err(Error::InvalidTlvValue(
+                0,
+                format!("Unknown NonSpendLeafVersion: {}", value),
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct GroupKeyReveal {
-    pub raw_group_key: Vec<u8>,
+    /// Raw group key bytes (internal key for V1 reveals).
+    pub raw_group_key: SerializedKey,
+    /// Tapscript root for the group key reveal, if present.
     pub tapscript_root: Option<Sha256Hash>,
+    /// Optional group key reveal version (V1 only).
+    pub version: Option<NonSpendLeafVersion>,
+    /// Optional custom tapscript subtree root (V1 only).
+    pub custom_subtree_root: Option<Sha256Hash>,
+}
+
+/// TLV type for the group key reveal version field.
+const GKR_VERSION_TYPE: crate::tlv::Type = crate::tlv::Type(0);
+/// TLV type for the group key reveal internal key field.
+const GKR_INTERNAL_KEY_TYPE: crate::tlv::Type = crate::tlv::Type(2);
+/// TLV type for the group key reveal tapscript root field.
+const GKR_TAPSCRIPT_ROOT_TYPE: crate::tlv::Type = crate::tlv::Type(4);
+/// TLV type for the group key reveal custom subtree root field.
+const GKR_CUSTOM_SUBTREE_ROOT_TYPE: crate::tlv::Type = crate::tlv::Type(7);
+/// Maximum total length for a V0 group key reveal payload.
+const GROUP_KEY_REVEAL_V0_MAX_LEN: u64 = 33 + 32;
+/// Length in bytes of a serialized group internal key.
+const GROUP_KEY_REVEAL_INTERNAL_KEY_LEN: usize = 33;
+/// Length in bytes of a tapscript root hash.
+const GROUP_KEY_REVEAL_TAPSCRIPT_ROOT_LEN: usize = 32;
+
+/// Decodes a group key reveal payload into a `GroupKeyReveal`.
+pub(crate) fn decode_group_key_reveal(bytes: &[u8]) -> Result<GroupKeyReveal, Error> {
+    let len = bytes.len() as u64;
+    if len <= GROUP_KEY_REVEAL_V0_MAX_LEN {
+        return decode_group_key_reveal_v0(bytes);
+    }
+
+    decode_group_key_reveal_v1(bytes)
+}
+
+/// Decodes a V0 group key reveal payload.
+fn decode_group_key_reveal_v0(bytes: &[u8]) -> Result<GroupKeyReveal, Error> {
+    let len = bytes.len() as u64;
+    if len > GROUP_KEY_REVEAL_V0_MAX_LEN {
+        return Err(Error::InvalidTlvValue(
+            0,
+            format!("GroupKeyRevealV0 too large: {}", len),
+        ));
+    }
+    if len < GROUP_KEY_REVEAL_INTERNAL_KEY_LEN as u64 {
+        return Err(Error::InvalidTlvValue(
+            0,
+            format!("GroupKeyRevealV0 too short: {}", len),
+        ));
+    }
+
+    let mut cursor = bitcoin::io::Cursor::new(bytes);
+    let mut key_bytes = [0u8; GROUP_KEY_REVEAL_INTERNAL_KEY_LEN];
+    cursor.read_exact(&mut key_bytes).map_err(Error::Io)?;
+    let raw_key = SerializedKey { bytes: key_bytes };
+
+    let remaining = len - GROUP_KEY_REVEAL_INTERNAL_KEY_LEN as u64;
+    let tapscript_root_bytes = read_inline_var_bytes(&mut cursor, remaining)?;
+    let tapscript_root = match tapscript_root_bytes.len() {
+        0 => None,
+        GROUP_KEY_REVEAL_TAPSCRIPT_ROOT_LEN => {
+            let mut root_bytes = [0u8; GROUP_KEY_REVEAL_TAPSCRIPT_ROOT_LEN];
+            root_bytes.copy_from_slice(&tapscript_root_bytes);
+            Some(Sha256Hash::from_byte_array(root_bytes))
+        }
+        other => {
+            return Err(Error::InvalidTlvValue(
+                0,
+                format!("Invalid V0 tapscript root length: {}", other),
+            ));
+        }
+    };
+
+    Ok(GroupKeyReveal {
+        raw_group_key: raw_key,
+        tapscript_root,
+        version: None,
+        custom_subtree_root: None,
+    })
+}
+
+/// Decodes a V1 group key reveal payload.
+fn decode_group_key_reveal_v1(bytes: &[u8]) -> Result<GroupKeyReveal, Error> {
+    let mut stream = crate::tlv::Stream::new(bitcoin::io::Cursor::new(bytes));
+    let mut version: Option<NonSpendLeafVersion> = None;
+    let mut internal_key: Option<SerializedKey> = None;
+    let mut tapscript_root: Option<Sha256Hash> = None;
+    let mut custom_subtree_root: Option<Sha256Hash> = None;
+
+    while let Some(record) = stream.next_record().map_err(Error::TlvStream)? {
+        match record.tlv_type() {
+            GKR_VERSION_TYPE => {
+                if record.value().len() != 1 {
+                    return Err(Error::InvalidTlvValue(
+                        GKR_VERSION_TYPE.0,
+                        "Length must be 1 for group key reveal version".to_string(),
+                    ));
+                }
+                version = Some(NonSpendLeafVersion::from_u8(record.value()[0])?);
+            }
+            GKR_INTERNAL_KEY_TYPE => {
+                if record.value().len() != GROUP_KEY_REVEAL_INTERNAL_KEY_LEN {
+                    return Err(Error::InvalidTlvValue(
+                        GKR_INTERNAL_KEY_TYPE.0,
+                        "Invalid internal key length".to_string(),
+                    ));
+                }
+                let mut key_bytes = [0u8; GROUP_KEY_REVEAL_INTERNAL_KEY_LEN];
+                key_bytes.copy_from_slice(record.value());
+                internal_key = Some(SerializedKey { bytes: key_bytes });
+            }
+            GKR_TAPSCRIPT_ROOT_TYPE => {
+                if record.value().len() != GROUP_KEY_REVEAL_TAPSCRIPT_ROOT_LEN {
+                    return Err(Error::InvalidTlvValue(
+                        GKR_TAPSCRIPT_ROOT_TYPE.0,
+                        "Invalid tapscript root length".to_string(),
+                    ));
+                }
+                let mut root_bytes = [0u8; GROUP_KEY_REVEAL_TAPSCRIPT_ROOT_LEN];
+                root_bytes.copy_from_slice(record.value());
+                tapscript_root = Some(Sha256Hash::from_byte_array(root_bytes));
+            }
+            GKR_CUSTOM_SUBTREE_ROOT_TYPE => {
+                if record.value().len() != GROUP_KEY_REVEAL_TAPSCRIPT_ROOT_LEN {
+                    return Err(Error::InvalidTlvValue(
+                        GKR_CUSTOM_SUBTREE_ROOT_TYPE.0,
+                        "Invalid custom subtree root length".to_string(),
+                    ));
+                }
+                let mut root_bytes = [0u8; GROUP_KEY_REVEAL_TAPSCRIPT_ROOT_LEN];
+                root_bytes.copy_from_slice(record.value());
+                custom_subtree_root = Some(Sha256Hash::from_byte_array(root_bytes));
+            }
+            type_val => {
+                if !type_val.is_odd() {
+                    return Err(Error::UnknownTlvType(type_val.0));
+                }
+            }
+        }
+    }
+
+    Ok(GroupKeyReveal {
+        raw_group_key: internal_key.ok_or(Error::MissingTlvField(
+            "GroupKeyReveal.internal_key".to_string(),
+        ))?,
+        tapscript_root: Some(tapscript_root.ok_or(Error::MissingTlvField(
+            "GroupKeyReveal.tapscript_root".to_string(),
+        ))?),
+        version: Some(version.ok_or(Error::MissingTlvField("GroupKeyReveal.version".to_string()))?),
+        custom_subtree_root,
+    })
+}
+
+/// Decodes an alt leaf asset by prepending a V0 version record.
+pub(crate) fn decode_alt_leaf(bytes: &[u8]) -> Result<Asset, Error> {
+    let mut prefixed = Vec::with_capacity(bytes.len() + 3);
+    prefixed.extend_from_slice(&[0u8, 1u8, 0u8]);
+    prefixed.extend_from_slice(bytes);
+    Asset::decode_tlv(bitcoin::io::Cursor::new(&prefixed))
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 /// Represents a commitment to a split of an asset.
 pub struct SplitCommitment {
+    /// The proof for the split commitment.
+    pub proof: crate::mssmt::MssmtProof,
     /// The root asset of the split commitment.
-    pub root_asset: Option<Box<Asset>>,
+    pub root_asset: Box<Asset>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 /// Represents a previous witness.
 pub struct PrevWitness {
     /// Previous input asset ID.
-    pub prev_id: Option<PrevInputAsset>,
+    pub prev_id: Option<PrevId>,
     /// Transaction witness.
     pub tx_witness: Witness,
     /// Split commitment.
@@ -356,10 +623,264 @@ const ASSET_LEAF_AMOUNT: crate::tlv::Type = crate::tlv::Type(6);
 const ASSET_LEAF_LOCK_TIME: crate::tlv::Type = crate::tlv::Type(7);
 const ASSET_LEAF_RELATIVE_LOCK_TIME: crate::tlv::Type = crate::tlv::Type(9);
 const ASSET_LEAF_PREV_WITNESS: crate::tlv::Type = crate::tlv::Type(11);
+/// TLV type for the split commitment root field.
+const ASSET_LEAF_SPLIT_COMMITMENT_ROOT: crate::tlv::Type = crate::tlv::Type(13);
 const ASSET_LEAF_SCRIPT_VERSION: crate::tlv::Type = crate::tlv::Type(14);
 const ASSET_LEAF_SCRIPT_KEY: crate::tlv::Type = crate::tlv::Type(16);
 const ASSET_LEAF_GROUP_KEY: crate::tlv::Type = crate::tlv::Type(17);
 const ASSET_LEAF_TYPE: crate::tlv::Type = crate::tlv::Type(4);
+
+/// TLV type for the witness prev ID field.
+const WITNESS_PREV_ID: crate::tlv::Type = crate::tlv::Type(1);
+/// TLV type for the witness stack field.
+const WITNESS_TX_WITNESS: crate::tlv::Type = crate::tlv::Type(3);
+/// TLV type for the split commitment proof field.
+const WITNESS_SPLIT_COMMITMENT: crate::tlv::Type = crate::tlv::Type(5);
+
+/// Maximum byte length of an asset's name.
+const MAX_ASSET_NAME_LENGTH: u64 = 64;
+/// Maximum number of witness stack elements we accept.
+const MAX_WITNESS_STACK_ITEMS: u64 = u16::MAX as u64;
+/// Maximum size for a single witness stack element.
+const MAX_WITNESS_ELEMENT_SIZE: u64 = u16::MAX as u64;
+
+/// Reads an inline var-bytes field with an explicit maximum length.
+fn read_inline_var_bytes<R: bitcoin::io::Read>(
+    r: &mut R,
+    max_len: u64,
+) -> Result<Vec<u8>, crate::error::Error> {
+    let len = Asset::read_varint(r)?;
+    if len > max_len {
+        return Err(crate::error::Error::InvalidTlvValue(
+            0,
+            format!("inline var bytes too large: {} (max: {})", len, max_len),
+        ));
+    }
+
+    let mut bytes = alloc::vec![0u8; len as usize];
+    r.read_exact(&mut bytes).map_err(crate::error::Error::Io)?;
+    Ok(bytes)
+}
+
+/// Decodes a Bitcoin outpoint from a TLV stream.
+fn decode_out_point<R: bitcoin::io::Read>(r: &mut R) -> Result<OutPoint, crate::error::Error> {
+    let mut hash_bytes = [0u8; 32];
+    r.read_exact(&mut hash_bytes)
+        .map_err(crate::error::Error::Io)?;
+    let mut index_bytes = [0u8; 4];
+    r.read_exact(&mut index_bytes)
+        .map_err(crate::error::Error::Io)?;
+
+    Ok(OutPoint {
+        txid: bitcoin::Txid::from_byte_array(hash_bytes),
+        vout: u32::from_be_bytes(index_bytes),
+    })
+}
+
+/// Maps an asset type to its protocol byte representation.
+fn asset_type_byte(asset_type: AssetType) -> u8 {
+    match asset_type {
+        AssetType::Normal => 0,
+        AssetType::Collectible => 1,
+    }
+}
+
+/// Computes an asset ID from genesis information.
+fn compute_asset_id(genesis: &GenesisInfo) -> AssetID {
+    let outpoint_bytes = serialize(&genesis.genesis_point);
+    let tag_hash = Sha256Hash::hash(genesis.name.as_bytes());
+
+    let mut buf = Vec::with_capacity(outpoint_bytes.len() + 32 + 32 + 4 + 1);
+    buf.extend_from_slice(&outpoint_bytes);
+    buf.extend_from_slice(&tag_hash.to_byte_array());
+    buf.extend_from_slice(&genesis.meta_hash.to_byte_array());
+    buf.extend_from_slice(&genesis.output_index.to_be_bytes());
+    buf.push(asset_type_byte(genesis.asset_type));
+
+    Sha256Hash::hash(&buf)
+}
+
+/// Decodes an asset genesis record from a TLV stream.
+pub(crate) fn decode_genesis_info<R: bitcoin::io::Read>(
+    mut r: R,
+) -> Result<GenesisInfo, crate::error::Error> {
+    let genesis_point = decode_out_point(&mut r)?;
+    let tag_bytes = read_inline_var_bytes(&mut r, MAX_ASSET_NAME_LENGTH)?;
+    let name = String::from_utf8(tag_bytes).map_err(|_| {
+        crate::error::Error::InvalidTlvValue(ASSET_LEAF_GENESIS.0, "invalid UTF-8 tag".to_string())
+    })?;
+
+    let mut meta_hash_bytes = [0u8; 32];
+    r.read_exact(&mut meta_hash_bytes)
+        .map_err(crate::error::Error::Io)?;
+    let meta_hash = Sha256Hash::from_byte_array(meta_hash_bytes);
+
+    let mut output_index_bytes = [0u8; 4];
+    r.read_exact(&mut output_index_bytes)
+        .map_err(crate::error::Error::Io)?;
+    let output_index = u32::from_be_bytes(output_index_bytes);
+
+    let mut asset_type_byte = [0u8; 1];
+    r.read_exact(&mut asset_type_byte)
+        .map_err(crate::error::Error::Io)?;
+    let asset_type = match asset_type_byte[0] {
+        0 => AssetType::Normal,
+        1 => AssetType::Collectible,
+        other => {
+            return Err(crate::error::Error::InvalidTlvValue(
+                ASSET_LEAF_TYPE.0,
+                format!("Unknown asset type: {}", other),
+            ));
+        }
+    };
+
+    let mut genesis = GenesisInfo {
+        genesis_point,
+        name,
+        meta_hash,
+        asset_id: AssetID::from_byte_array([0u8; 32]),
+        asset_type,
+        output_index,
+    };
+    genesis.asset_id = compute_asset_id(&genesis);
+
+    Ok(genesis)
+}
+
+/// Decodes a prev ID from a witness record.
+fn decode_prev_id<R: bitcoin::io::Read>(mut r: R) -> Result<PrevId, crate::error::Error> {
+    let out_point = decode_out_point(&mut r)?;
+
+    let mut asset_id_bytes = [0u8; 32];
+    r.read_exact(&mut asset_id_bytes)
+        .map_err(crate::error::Error::Io)?;
+    let asset_id = AssetID::from_byte_array(asset_id_bytes);
+
+    let mut script_key_bytes = [0u8; 33];
+    r.read_exact(&mut script_key_bytes)
+        .map_err(crate::error::Error::Io)?;
+
+    Ok(PrevId {
+        out_point,
+        asset_id,
+        script_key: SerializedKey {
+            bytes: script_key_bytes,
+        },
+    })
+}
+
+/// Decodes a witness stack from a witness record.
+fn decode_tx_witness<R: bitcoin::io::Read>(mut r: R) -> Result<Witness, crate::error::Error> {
+    let num_items = Asset::read_varint(&mut r)?;
+    if num_items > MAX_WITNESS_STACK_ITEMS {
+        return Err(crate::error::Error::InvalidTlvValue(
+            WITNESS_TX_WITNESS.0,
+            format!("too many witness items: {}", num_items),
+        ));
+    }
+
+    let mut items = Vec::with_capacity(num_items as usize);
+    for _ in 0..num_items {
+        let item = read_inline_var_bytes(&mut r, MAX_WITNESS_ELEMENT_SIZE)?;
+        items.push(item);
+    }
+
+    Ok(Witness::from(items))
+}
+
+/// Decodes a split commitment from a witness record.
+fn decode_split_commitment<R: bitcoin::io::Read>(
+    mut r: R,
+    max_len: u64,
+) -> Result<SplitCommitment, crate::error::Error> {
+    let proof_bytes = read_inline_var_bytes(&mut r, max_len)?;
+    let proof = crate::mssmt::MssmtProof::decode_tlv(bitcoin::io::Cursor::new(&proof_bytes))?;
+
+    let root_asset_bytes = read_inline_var_bytes(&mut r, max_len)?;
+    let root_asset = Asset::decode_tlv(bitcoin::io::Cursor::new(&root_asset_bytes))?;
+
+    Ok(SplitCommitment {
+        proof,
+        root_asset: Box::new(root_asset),
+    })
+}
+
+/// Decodes a split commitment root node from a leaf record.
+fn decode_split_commitment_root<R: bitcoin::io::Read>(
+    mut r: R,
+) -> Result<crate::mssmt::MssmtNode, crate::error::Error> {
+    let mut hash_bytes = [0u8; 32];
+    r.read_exact(&mut hash_bytes)
+        .map_err(crate::error::Error::Io)?;
+    let mut sum_bytes = [0u8; 8];
+    r.read_exact(&mut sum_bytes)
+        .map_err(crate::error::Error::Io)?;
+
+    Ok(crate::mssmt::MssmtNode {
+        hash: Sha256Hash::from_byte_array(hash_bytes),
+        sum: u64::from_be_bytes(sum_bytes),
+    })
+}
+
+/// Decodes a single witness from its nested TLV stream.
+fn decode_witness<R: bitcoin::io::Read>(r: R) -> Result<PrevWitness, crate::error::Error> {
+    let mut stream = crate::tlv::Stream::new(r);
+
+    let mut prev_id: Option<PrevId> = None;
+    let mut tx_witness: Option<Witness> = None;
+    let mut split_commitment: Option<SplitCommitment> = None;
+
+    while let Some(record) = stream
+        .next_record()
+        .map_err(crate::error::Error::TlvStream)?
+    {
+        match record.tlv_type() {
+            WITNESS_PREV_ID => {
+                prev_id = Some(decode_prev_id(record.value_reader())?);
+            }
+            WITNESS_TX_WITNESS => {
+                tx_witness = Some(decode_tx_witness(record.value_reader())?);
+            }
+            WITNESS_SPLIT_COMMITMENT => {
+                let max_len = record.value().len() as u64;
+                split_commitment = Some(decode_split_commitment(record.value_reader(), max_len)?);
+            }
+            type_val => {
+                if !type_val.is_odd() {
+                    return Err(crate::error::Error::UnknownTlvType(type_val.0));
+                }
+            }
+        }
+    }
+
+    Ok(PrevWitness {
+        prev_id,
+        tx_witness: tx_witness.unwrap_or_default(),
+        split_commitment,
+    })
+}
+
+/// Decodes a list of witnesses from the asset leaf record.
+fn decode_prev_witnesses<R: bitcoin::io::Read>(
+    mut r: R,
+) -> Result<Vec<PrevWitness>, crate::error::Error> {
+    let num_witnesses = Asset::read_varint(&mut r)?;
+    if num_witnesses > MAX_WITNESS_STACK_ITEMS {
+        return Err(crate::error::Error::InvalidTlvValue(
+            ASSET_LEAF_PREV_WITNESS.0,
+            format!("too many prev witnesses: {}", num_witnesses),
+        ));
+    }
+
+    let mut witnesses = Vec::with_capacity(num_witnesses as usize);
+    for _ in 0..num_witnesses {
+        let witness_bytes = read_inline_var_bytes(&mut r, MAX_WITNESS_ELEMENT_SIZE)?;
+        let witness = decode_witness(bitcoin::io::Cursor::new(&witness_bytes))?;
+        witnesses.push(witness);
+    }
+
+    Ok(witnesses)
+}
 
 impl Asset {
     /// Decodes an Asset from a TLV byte slice.
@@ -375,7 +896,7 @@ impl Asset {
         let mut script_key: Option<Vec<u8>> = None;
         let mut group_key: Option<AssetGroup> = None;
         let mut unknown_odd_types = alloc::collections::BTreeMap::new();
-        let mut asset_type: Option<AssetType> = None;
+        let mut split_commitment_root: Option<crate::mssmt::MssmtNode> = None;
 
         while let Some(record) = stream
             .next_record()
@@ -392,14 +913,7 @@ impl Asset {
                     version = Some(AssetVersion::from_u8(record.value()[0])?);
                 }
                 ASSET_LEAF_GENESIS => {
-                    genesis = Some(GenesisInfo {
-                        genesis_point: bitcoin::OutPoint::default(),
-                        name: String::new(),
-                        meta_hash: Sha256Hash::const_hash(&[]),
-                        asset_id: AssetID::const_hash(&[]),
-                        asset_type: asset_type.unwrap_or(AssetType::Normal),
-                        output_index: 0,
-                    });
+                    genesis = Some(decode_genesis_info(record.value_reader())?);
                 }
                 ASSET_LEAF_AMOUNT => {
                     // Decode varint for amount
@@ -419,9 +933,11 @@ impl Asset {
                     relative_lock_time = Some(relative_lock_time_val);
                 }
                 ASSET_LEAF_PREV_WITNESS => {
-                    // For now, we'll create an empty vector
-                    // TODO: Implement proper PrevWitness TLV decoding
-                    prev_witnesses = Some(Vec::new());
+                    prev_witnesses = Some(decode_prev_witnesses(record.value_reader())?);
+                }
+                ASSET_LEAF_SPLIT_COMMITMENT_ROOT => {
+                    split_commitment_root =
+                        Some(decode_split_commitment_root(record.value_reader())?);
                 }
                 ASSET_LEAF_SCRIPT_VERSION => {
                     if record.value().len() != 2 {
@@ -434,11 +950,21 @@ impl Asset {
                         Some(u16::from_be_bytes([record.value()[0], record.value()[1]]));
                 }
                 ASSET_LEAF_SCRIPT_KEY => {
+                    if record.value().len() != 33 {
+                        return Err(crate::error::Error::InvalidTlvValue(
+                            ASSET_LEAF_SCRIPT_KEY.0,
+                            String::from("Length must be 33 for script key"),
+                        ));
+                    }
                     script_key = Some(record.value().to_vec());
                 }
                 ASSET_LEAF_GROUP_KEY => {
-                    // For now, we'll create a simplified AssetGroup
-                    // TODO: Implement proper AssetGroup TLV decoding
+                    if record.value().len() != 33 {
+                        return Err(crate::error::Error::InvalidTlvValue(
+                            ASSET_LEAF_GROUP_KEY.0,
+                            String::from("Length must be 33 for group key"),
+                        ));
+                    }
                     group_key = Some(AssetGroup {
                         raw_group_key: record.value().to_vec(),
                         tweaked_group_key: Vec::new(),
@@ -453,16 +979,16 @@ impl Asset {
                             String::from("Length must be 1 for asset type"),
                         ));
                     }
-                    asset_type = Some(match record.value()[0] {
+                    let _asset_type = match record.value()[0] {
                         0 => AssetType::Normal,
                         1 => AssetType::Collectible,
                         _ => {
                             return Err(crate::error::Error::InvalidTlvValue(
                                 ASSET_LEAF_TYPE.0,
                                 format!("Unknown asset type: {}", record.value()[0]),
-                            ))
+                            ));
                         }
-                    });
+                    };
                 }
                 type_val => {
                     if type_val.is_odd() {
@@ -488,6 +1014,7 @@ impl Asset {
             asset_group: group_key,
             chain_anchor: None, // Not encoded in TLV
             prev_witnesses: prev_witnesses.unwrap_or_default(),
+            split_commitment_root,
             is_spent: false,                         // Not encoded in TLV
             lease_owner: Vec::new(),                 // Not encoded in TLV
             lease_expiry: 0,                         // Not encoded in TLV

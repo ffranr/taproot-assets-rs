@@ -7,6 +7,19 @@ guest circuits. It is designed for use with proof systems like
 [RISC Zero](https://www.risczero.com/) and integrates with the shared interfaces
 in `taproot-assets-zk-core`.
 
+## Guests
+
+The verifier expects prebuilt guest ELFs. `ClaimElfs::load_default` loads
+them from `target/riscv32im-risc0-zkvm-elf/docker`. Build guests with
+`make build-zk` (or `make build-all` if you want the rest of the workspace).
+
+## Parity Testing
+
+- Run `RUN_ZK_PARITY=1 cargo test -p taproot-assets-zk-verifier --test zk_parity`.
+- The test compares join outputs with core verification for upstream vectors.
+- Vectors are read from `external/taproot-assets-upstream/proof/testdata` and the
+  test skips if they are missing.
+
 ## Usage
 
 Add to your `Cargo.toml`:

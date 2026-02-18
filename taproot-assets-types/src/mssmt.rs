@@ -1,11 +1,11 @@
 use crate::error::Error;
 use alloc::{string::ToString, vec::Vec};
-use bitcoin::hashes::{sha256::Hash as Sha256Hash, Hash};
+use bitcoin::hashes::{Hash, sha256::Hash as Sha256Hash};
 use bitcoin::io::Read;
 use serde::{Deserialize, Serialize};
 
 /// Represents a node in an MS-SMT (Merkle Sum Sparse Merkle Tree).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MssmtNode {
     /// The hash of the node.
     pub hash: Sha256Hash,
@@ -14,7 +14,7 @@ pub struct MssmtNode {
 }
 
 /// Represents a merkle proof for a MS-SMT.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MssmtProof {
     // Corresponds to mssmt.Proof
     /// Siblings that should be hashed with the leaf and its parents to arrive at the root.

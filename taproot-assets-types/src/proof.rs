@@ -1,16 +1,17 @@
 // --- Proof structures (corresponding to Go's `proof` package) ---
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
+use bitcoin::PublicKey;
+pub use bitcoin::TxMerkleNode;
 use bitcoin::consensus::Decodable;
 use bitcoin::hashes::Hash;
 use bitcoin::io::Read;
-use bitcoin::PublicKey;
-pub use bitcoin::TxMerkleNode;
 use serde::{Deserialize, Serialize};
 
 use crate::alloc::string::ToString;
 use alloc::{format, vec::Vec};
 
+use crate::asset::SerializedKey;
 use crate::commitment::TapscriptPreimage;
 use crate::error::Error;
 use crate::tlv::{Stream, Type};
@@ -33,6 +34,9 @@ pub struct CommitmentProof {
     /// at the tapscript root of the expected output.
     pub tap_sibling_preimage: Option<TapscriptPreimage>,
 
+    /// STXOProofs are proofs keyed by serialized script key for v1 assets.
+    pub stxo_proofs: BTreeMap<SerializedKey, crate::commitment::Proof>,
+
     /// UnknownOddTypes is a map of unknown odd types that were encountered
     /// during decoding. This map is used to preserve unknown types that we
     /// don't know of yet, so we can still encode them back when serializing.
@@ -45,6 +49,8 @@ pub struct CommitmentProof {
 // TLV Types for CommitmentProof (based on Go's proof/records.go)
 // No explicit type for the proof.Proof itself, assuming it's the primary content or handled differently.
 const COMMITMENT_PROOF_TAP_SIBLING_PREIMAGE_TYPE: Type = Type(5);
+/// TLV type for the STXO proof map within a commitment proof.
+const COMMITMENT_PROOF_STXO_PROOFS_TYPE: Type = Type(7);
 // Type for the Merkle Proof itself is not directly specified here for CommitmentProof's TLV stream.
 // It's often the core data. Let's assume it's decoded from the main stream if no specific type.
 // For now, we will assume CommitmentMerkleProof::decode_tlv handles its own format from a reader.
@@ -55,6 +61,7 @@ impl CommitmentProof {
         let mut asset_proof: Option<crate::commitment::AssetProof> = None;
         let mut taproot_asset_proof: Option<crate::commitment::TaprootAssetProof> = None;
         let mut tap_sibling_preimage: Option<TapscriptPreimage> = None;
+        let mut stxo_proofs: Option<BTreeMap<SerializedKey, crate::commitment::Proof>> = None;
         let mut unknown_odd_types = BTreeMap::new();
 
         // These type constants correspond to the underlying commitment.Proof fields
@@ -79,6 +86,9 @@ impl CommitmentProof {
                     tap_sibling_preimage =
                         Some(TapscriptPreimage::decode_tlv(record.value_reader())?);
                 }
+                COMMITMENT_PROOF_STXO_PROOFS_TYPE => {
+                    stxo_proofs = Some(decode_commitment_proofs(record.value_reader())?);
+                }
                 type_val => {
                     if type_val.is_odd() {
                         unknown_odd_types.insert(type_val.0, record.value().to_vec());
@@ -102,6 +112,7 @@ impl CommitmentProof {
         Ok(CommitmentProof {
             proof: commitment_proof,
             tap_sibling_preimage,
+            stxo_proofs: stxo_proofs.unwrap_or_default(),
             unknown_odd_types,
         })
     }
@@ -212,6 +223,11 @@ const TAPROOT_PROOF_INTERNAL_KEY_TYPE: Type = Type(2);
 const TAPROOT_PROOF_COMMITMENT_PROOF_TYPE: Type = Type(3);
 const TAPROOT_PROOF_TAPSCRIPT_PROOF_TYPE: Type = Type(5);
 
+/// Maximum number of taproot proofs allowed in a single record.
+const MAX_NUM_TAPROOT_PROOFS: u64 = 1_000_000 / 43;
+/// Maximum size in bytes for a single taproot proof blob.
+const MAX_TAPROOT_PROOF_SIZE_BYTES: u64 = 65_535;
+
 impl TaprootProof {
     /// Decodes a TaprootProof from a TLV byte slice.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
@@ -279,6 +295,198 @@ impl TaprootProof {
     }
 }
 
+/// Reads a Bitcoin-style compact-size integer from the reader.
+fn read_varint<R: Read>(r: &mut R) -> Result<u64, Error> {
+    let mut first_byte = [0u8; 1];
+    r.read_exact(&mut first_byte).map_err(Error::Io)?;
+
+    match first_byte[0] {
+        253 => {
+            let mut u16_bytes = [0u8; 2];
+            r.read_exact(&mut u16_bytes).map_err(Error::Io)?;
+            Ok(u16::from_be_bytes(u16_bytes) as u64)
+        }
+        254 => {
+            let mut u32_bytes = [0u8; 4];
+            r.read_exact(&mut u32_bytes).map_err(Error::Io)?;
+            Ok(u32::from_be_bytes(u32_bytes) as u64)
+        }
+        255 => {
+            let mut u64_bytes = [0u8; 8];
+            r.read_exact(&mut u64_bytes).map_err(Error::Io)?;
+            Ok(u64::from_be_bytes(u64_bytes))
+        }
+        _ => Ok(first_byte[0] as u64),
+    }
+}
+
+/// Reads a length-prefixed byte vector capped by `max_len`.
+fn read_inline_var_bytes<R: Read>(r: &mut R, max_len: u64) -> Result<Vec<u8>, Error> {
+    let len = read_varint(r)?;
+    if len > max_len {
+        return Err(Error::BitcoinSerialization(format!(
+            "inline var bytes too large: {} (max: {})",
+            len, max_len
+        )));
+    }
+
+    let mut bytes = alloc::vec![0u8; len as usize];
+    r.read_exact(&mut bytes).map_err(Error::Io)?;
+    Ok(bytes)
+}
+
+/// Decodes a list of taproot proofs using the inline-var-bytes format.
+fn decode_taproot_proofs<R: Read>(mut r: R) -> Result<Vec<TaprootProof>, Error> {
+    let num_proofs = read_varint(&mut r)?;
+    if num_proofs > MAX_NUM_TAPROOT_PROOFS {
+        return Err(Error::BitcoinSerialization(
+            "too many taproot proofs".to_string(),
+        ));
+    }
+
+    let mut proofs = Vec::with_capacity(num_proofs as usize);
+    for _ in 0..num_proofs {
+        let proof_bytes = read_inline_var_bytes(&mut r, MAX_TAPROOT_PROOF_SIZE_BYTES)?;
+        let proof = TaprootProof::decode_tlv(bitcoin::io::Cursor::new(&proof_bytes))?;
+        proofs.push(proof);
+    }
+
+    Ok(proofs)
+}
+
+/// Decodes additional input proof files in the same format as Go's proof file list.
+fn decode_additional_inputs<R: Read>(mut r: R) -> Result<Vec<File>, Error> {
+    let num_inputs = read_varint(&mut r)?;
+    if num_inputs > u16::MAX as u64 {
+        return Err(Error::BitcoinSerialization(
+            "too many additional inputs".to_string(),
+        ));
+    }
+
+    let mut inputs = Vec::with_capacity(num_inputs as usize);
+    for _ in 0..num_inputs {
+        let input_bytes = read_inline_var_bytes(&mut r, FILE_MAX_SIZE_BYTES)?;
+        let input_file = File::from_bytes(&input_bytes)?;
+        inputs.push(input_file);
+    }
+
+    Ok(inputs)
+}
+
+/// Decodes alt leaves encoded using the inline-var-bytes list format.
+fn decode_alt_leaves(bytes: &[u8]) -> Result<Vec<crate::asset::Asset>, Error> {
+    if bytes.len() as u64 > ALT_LEAVES_MAX_SIZE_BYTES {
+        return Err(Error::InvalidTlvValue(
+            PROOF_ALT_LEAVES_TYPE.0,
+            format!("alt leaves payload too large: {} bytes", bytes.len()),
+        ));
+    }
+
+    let mut cursor = bitcoin::io::Cursor::new(bytes);
+    let num_leaves = read_varint(&mut cursor)?;
+    let mut leaves = Vec::with_capacity(num_leaves as usize);
+    let mut leaf_keys = BTreeSet::new();
+
+    for _ in 0..num_leaves {
+        let leaf_bytes = read_inline_var_bytes(&mut cursor, ALT_LEAVES_MAX_SIZE_BYTES)?;
+        let leaf = crate::asset::decode_alt_leaf(&leaf_bytes)?;
+        if leaf.script_key.len() != 33 {
+            return Err(Error::InvalidTlvValue(
+                PROOF_ALT_LEAVES_TYPE.0,
+                format!(
+                    "alt leaf script key length must be 33, got {}",
+                    leaf.script_key.len()
+                ),
+            ));
+        }
+
+        let mut key_bytes = [0u8; 33];
+        key_bytes.copy_from_slice(&leaf.script_key);
+        let key = SerializedKey { bytes: key_bytes };
+        if !leaf_keys.insert(key) {
+            return Err(Error::InvalidTlvValue(
+                PROOF_ALT_LEAVES_TYPE.0,
+                "duplicate alt leaf script key".to_string(),
+            ));
+        }
+
+        leaves.push(leaf);
+    }
+
+    Ok(leaves)
+}
+
+/// Decodes the STXO commitment proof map keyed by serialized script keys.
+fn decode_commitment_proofs<R: Read>(
+    mut r: R,
+) -> Result<BTreeMap<SerializedKey, crate::commitment::Proof>, Error> {
+    let num_proofs = read_varint(&mut r)?;
+    if num_proofs > MAX_NUM_TAPROOT_PROOFS {
+        return Err(Error::BitcoinSerialization(
+            "too many commitment proofs".to_string(),
+        ));
+    }
+
+    let mut proofs = BTreeMap::new();
+    for _ in 0..num_proofs {
+        let mut key_bytes = [0u8; 33];
+        r.read_exact(&mut key_bytes).map_err(Error::Io)?;
+
+        let proof_bytes = read_inline_var_bytes(&mut r, MAX_TAPROOT_PROOF_SIZE_BYTES)?;
+        let proof = crate::commitment::Proof::decode_tlv(bitcoin::io::Cursor::new(&proof_bytes))?;
+        proofs.insert(SerializedKey { bytes: key_bytes }, proof);
+    }
+
+    Ok(proofs)
+}
+
+/// Decodes a meta reveal TLV stream.
+fn decode_meta_reveal<R: Read>(r: R) -> Result<MetaReveal, Error> {
+    let mut stream = Stream::new(r);
+    let mut meta_type: Option<MetaType> = None;
+    let mut data: Option<Vec<u8>> = None;
+    let mut unknown_odd_types = BTreeMap::new();
+
+    while let Some(record) = stream.next_record().map_err(Error::TlvStream)? {
+        match record.tlv_type() {
+            META_REVEAL_ENCODING_TYPE => {
+                if record.value().len() != 1 {
+                    return Err(Error::InvalidTlvValue(
+                        META_REVEAL_ENCODING_TYPE.0,
+                        "Length must be 1 for meta type".to_string(),
+                    ));
+                }
+                meta_type = Some(match record.value()[0] {
+                    0 => MetaType::Opaque,
+                    1 => MetaType::Json,
+                    other => {
+                        return Err(Error::InvalidTlvValue(
+                            META_REVEAL_ENCODING_TYPE.0,
+                            format!("Unknown meta type: {}", other),
+                        ));
+                    }
+                });
+            }
+            META_REVEAL_DATA_TYPE => {
+                data = Some(record.value().to_vec());
+            }
+            type_val => {
+                if type_val.is_odd() {
+                    unknown_odd_types.insert(type_val.0, record.value().to_vec());
+                } else {
+                    return Err(Error::UnknownTlvType(type_val.0));
+                }
+            }
+        }
+    }
+
+    Ok(MetaReveal {
+        meta_type: meta_type.ok_or(Error::MissingTlvField("MetaReveal.meta_type".to_string()))?,
+        data: data.ok_or(Error::MissingTlvField("MetaReveal.data".to_string()))?,
+        unknown_odd_types,
+    })
+}
+
 /// A Merkle proof that a transaction is included in a block.
 /// This corresponds to `proof.TxMerkleProof` in Go.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -290,6 +498,26 @@ pub struct TxMerkleProof {
     /// Direction bits: `false` means the node is on the left, `true` means on the right.
     /// The bits correspond to entries in `nodes`.
     pub bits: Vec<bool>,
+}
+
+/// Meta data type for genesis reveals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MetaType {
+    /// Opaque metadata bytes.
+    Opaque = 0,
+    /// JSON metadata bytes.
+    Json = 1,
+}
+
+/// Meta reveal data included in proof files.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaReveal {
+    /// The meta data type.
+    pub meta_type: MetaType,
+    /// The raw meta data bytes.
+    pub data: Vec<u8>,
+    /// Unknown odd types for forward compatibility.
+    pub unknown_odd_types: BTreeMap<u64, Vec<u8>>,
 }
 
 impl TxMerkleProof {
@@ -430,17 +658,17 @@ pub struct Proof {
     /// asset of the split.
     pub split_root_proof: Option<TaprootProof>,
 
-    /// MetaReveal is the set of bytes that were revealed to prove the
-    /// derivation of the meta data hash contained in the genesis asset.
+    /// MetaReveal is the data that was revealed to prove the derivation of the
+    /// meta data hash contained in the genesis asset.
     ///
     /// NOTE: This field is optional, and can only be specified if the asset
     /// above is a genesis asset. If specified, then verifiers _should_ also
     /// verify the hashes match up.
-    pub meta_reveal: Option<Vec<u8>>, // Simplified for now, could be a proper struct
+    pub meta_reveal: Option<MetaReveal>,
 
     /// AdditionalInputs is a nested full proof for any additional inputs
     /// found within the resulting asset.
-    pub additional_inputs: Vec<Vec<u8>>, // Raw proof file bytes
+    pub additional_inputs: Vec<File>,
 
     /// ChallengeWitness is an optional virtual transaction witness that
     /// serves as an ownership proof for the asset. If this is non-nil, then
@@ -469,7 +697,7 @@ pub struct Proof {
     /// was inserted in the output anchor Tap commitment. These data-carrying
     /// leaves are used for a purpose distinct from representing individual
     /// Taproot Assets.
-    pub alt_leaves: Vec<Vec<u8>>, // Simplified for now, could be a proper struct
+    pub alt_leaves: Vec<crate::asset::Asset>,
 
     /// UnknownOddTypes is a map of unknown odd types that were encountered
     /// during decoding. This map is used to preserve unknown types that we
@@ -497,6 +725,14 @@ const PROOF_BLOCK_HEIGHT_TYPE: Type = Type(22);
 const PROOF_GENESIS_REVEAL_TYPE: Type = Type(23);
 const PROOF_GROUP_KEY_REVEAL_TYPE: Type = Type(25);
 const PROOF_ALT_LEAVES_TYPE: Type = Type(27);
+
+/// TLV type for the meta reveal encoding field.
+const META_REVEAL_ENCODING_TYPE: Type = Type(0);
+/// TLV type for the meta reveal data field.
+const META_REVEAL_DATA_TYPE: Type = Type(2);
+
+/// Maximum total size of the alt leaves payload.
+const ALT_LEAVES_MAX_SIZE_BYTES: u64 = u16::MAX as u64;
 
 // Magic bytes for individual proofs (not proof files)
 const PROOF_PREFIX_MAGIC_BYTES: [u8; 4] = [0x54, 0x41, 0x50, 0x50]; // "TAPP"
@@ -531,12 +767,12 @@ impl Proof {
         let mut inclusion_proof: Option<TaprootProof> = None;
         let mut exclusion_proofs: Option<Vec<TaprootProof>> = None;
         let mut split_root_proof: Option<TaprootProof> = None;
-        let mut meta_reveal: Option<Vec<u8>> = None;
-        let mut additional_inputs: Option<Vec<Vec<u8>>> = None;
+        let mut meta_reveal: Option<MetaReveal> = None;
+        let mut additional_inputs: Option<Vec<File>> = None;
         let mut challenge_witness: Option<bitcoin::Witness> = None;
         let mut genesis_reveal: Option<crate::asset::GenesisReveal> = None;
         let mut group_key_reveal: Option<crate::asset::GroupKeyReveal> = None;
-        let mut alt_leaves: Option<Vec<Vec<u8>>> = None;
+        let mut alt_leaves: Option<Vec<crate::asset::Asset>> = None;
         let mut unknown_odd_types = BTreeMap::new();
 
         while let Some(record) = stream.next_record().map_err(Error::TlvStream)? {
@@ -552,16 +788,11 @@ impl Proof {
                 PROOF_PREV_OUT_TYPE => {
                     // Decode OutPoint (32 bytes hash + 4 bytes index)
                     let mut hash_bytes = [0u8; 32];
-                    record
-                        .value_reader()
-                        .read_exact(&mut hash_bytes)
-                        .map_err(Error::Io)?;
+                    let mut reader = record.value_reader();
+                    reader.read_exact(&mut hash_bytes).map_err(Error::Io)?;
                     let mut index_bytes = [0u8; 4];
-                    record
-                        .value_reader()
-                        .read_exact(&mut index_bytes)
-                        .map_err(Error::Io)?;
-                    let index = u32::from_le_bytes(index_bytes);
+                    reader.read_exact(&mut index_bytes).map_err(Error::Io)?;
+                    let index = u32::from_be_bytes(index_bytes);
                     prev_out = Some(bitcoin::OutPoint {
                         txid: bitcoin::Txid::from_byte_array(hash_bytes),
                         vout: index,
@@ -612,24 +843,16 @@ impl Proof {
                     inclusion_proof = Some(TaprootProof::decode_tlv(record.value_reader())?);
                 }
                 PROOF_EXCLUSION_PROOFS_TYPE => {
-                    // Decode array of TaprootProof
-                    let proofs = Vec::new();
-                    // For now, just store as empty vector since we can't easily decode multiple proofs
-                    // TODO: Implement proper decoding of multiple TaprootProofs
-                    exclusion_proofs = Some(proofs);
+                    exclusion_proofs = Some(decode_taproot_proofs(record.value_reader())?);
                 }
                 PROOF_SPLIT_ROOT_PROOF_TYPE => {
                     split_root_proof = Some(TaprootProof::decode_tlv(record.value_reader())?);
                 }
                 PROOF_META_REVEAL_TYPE => {
-                    meta_reveal = Some(record.value().to_vec());
+                    meta_reveal = Some(decode_meta_reveal(record.value_reader())?);
                 }
                 PROOF_ADDITIONAL_INPUTS_TYPE => {
-                    // Decode array of proof files
-                    let inputs = Vec::new();
-                    // For now, just store as empty vector since we can't easily decode multiple inputs
-                    // TODO: Implement proper decoding of multiple proof files
-                    additional_inputs = Some(inputs);
+                    additional_inputs = Some(decode_additional_inputs(record.value_reader())?);
                 }
                 PROOF_CHALLENGE_WITNESS_TYPE => {
                     // Decode bitcoin::Witness using consensus_decode
@@ -644,24 +867,22 @@ impl Proof {
                     );
                 }
                 PROOF_GENESIS_REVEAL_TYPE => {
-                    // Decode GenesisReveal - simplified for now
+                    let genesis_info = crate::asset::decode_genesis_info(record.value_reader())
+                        .map_err(|e| {
+                            Error::TlvStream(format!("GenesisReveal decode failed: {}", e))
+                        })?;
                     genesis_reveal = Some(crate::asset::GenesisReveal {
-                        genesis_base: None,
+                        genesis_base: Some(genesis_info),
                         asset_type: crate::asset::AssetType::Normal,
                         amount: 0,
                         meta_reveal: None,
                     });
                 }
                 PROOF_GROUP_KEY_REVEAL_TYPE => {
-                    // Decode GroupKeyReveal - simplified for now
-                    group_key_reveal = Some(crate::asset::GroupKeyReveal {
-                        raw_group_key: Vec::new(),
-                        tapscript_root: None,
-                    });
+                    group_key_reveal = Some(crate::asset::decode_group_key_reveal(record.value())?);
                 }
                 PROOF_ALT_LEAVES_TYPE => {
-                    // Decode array of AltLeaf - simplified for now
-                    alt_leaves = Some(Vec::new());
+                    alt_leaves = Some(decode_alt_leaves(record.value())?);
                 }
                 type_val => {
                     if type_val.is_odd() {
@@ -723,6 +944,8 @@ pub struct HashedProof {
 // Constants from Go implementation
 const FILE_MAX_NUM_PROOFS: u64 = 420000;
 const FILE_MAX_PROOF_SIZE_BYTES: u64 = 128 * 1024 * 1024; // 128 MiB
+/// Maximum size of a proof file in bytes.
+const FILE_MAX_SIZE_BYTES: u64 = 500 * 1024 * 1024;
 
 // Magic bytes for proof files
 const FILE_PREFIX_MAGIC_BYTES: [u8; 4] = [0x54, 0x41, 0x50, 0x46]; // "TAPF"
@@ -842,7 +1065,7 @@ impl File {
     /// Hashes a proof's content together with the previous hash:
     /// SHA256(prev_hash || proof_bytes)
     fn hash_proof(proof_bytes: &[u8], prev_hash: &[u8; 32]) -> [u8; 32] {
-        use bitcoin::hashes::{sha256::Hash as Sha256Hash, Hash};
+        use bitcoin::hashes::{Hash, sha256::Hash as Sha256Hash};
 
         // Create a combined buffer: prev_hash || proof_bytes
         let mut combined = Vec::with_capacity(32 + proof_bytes.len());

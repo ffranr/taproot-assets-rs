@@ -100,7 +100,7 @@ impl<R: Read> Stream<R> {
                     "Failed to read TLV length for type {:?}: {:?}",
                     tlv_type,
                     e
-                ))
+                ));
             }
         };
 

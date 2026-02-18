@@ -1,0 +1,16 @@
+[package]
+name = "join-prover"
+version = "0.0.1"
+edition = "2024"
+
+# Guest ELF never goes to crates.io.
+publish = false
+
+[dependencies]
+taproot-assets-zk-core = { path = "../../taproot-assets-zk-core" }
+
+risc0-zkvm = { version = "3.0.4", default-features = false }
+serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
+
+[features]
+default = []

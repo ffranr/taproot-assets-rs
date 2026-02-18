@@ -4,14 +4,21 @@ members = [
   "taproot-assets",
   "taproot-assets-rpc",
   "taproot-assets-types",
-  "zk/guests/mint-prover",
+  "taproot-assets-core",
+  "zk/guests/anchor-claim-prover",
+  "zk/guests/asset-claim-prover",
+  "zk/guests/proof-chain-claim-prover",
+  "zk/guests/taproot-commitment-prover",
+  "zk/guests/join-prover",
+  "zk/guests/stxo-claim-prover",
   "zk/taproot-assets-zk-core",
   "zk/taproot-assets-zk-verifier",
 ]
 
+
 [workspace.package]
 version = "0.0.1"
-edition = "2021"
+edition = "2024"
 license = "MIT OR Apache-2.0"
 publish = false
 repository = "https://github.com/ffranr/taproot-assets-rs"

@@ -1,9 +1,7 @@
-use std::{env, path::PathBuf};
-
 #[cfg(feature = "build-protos")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // <crate>/proto/
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
+    let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
     let proto_root = manifest_dir.join("proto");
 
     tonic_build::configure()
