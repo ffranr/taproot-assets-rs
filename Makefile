@@ -1,5 +1,5 @@
 .PHONY: all build-all build build-rpc build-zk vendor-proto check-protoc \
-	build-tests test test-local test-integration test-all publish-dry-run fmt
+	build-tests test test-local test-integration test-all publish-dry-run confirm-pre-publish publish fmt
 
 all: build-all
 
@@ -99,6 +99,22 @@ publish-dry-run:
 	@cargo publish --dry-run -p taproot-assets
 	@cargo publish --dry-run -p taproot-assets-zk-core
 	@cargo publish --dry-run -p taproot-assets-zk-verifier
+
+confirm-pre-publish:
+	@read -r -p "Publish crates to crates.io (yes/no)? " answer; \
+	case "$$answer" in \
+		yes|y|Y) ;; \
+		*) echo "Publish aborted."; exit 1 ;; \
+	esac
+
+publish: confirm-pre-publish
+	@echo "Publishing crates to crates.io"
+	@cargo publish -p taproot-assets-types
+	@cargo publish -p taproot-assets-core
+	@cargo publish -p taproot-assets-rpc
+	@cargo publish -p taproot-assets
+	@cargo publish -p taproot-assets-zk-core
+	@cargo publish -p taproot-assets-zk-verifier
 
 fmt:
 	@echo "Formatting worksapce"
