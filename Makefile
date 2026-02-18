@@ -77,4 +77,3 @@ publish-dry-run:
 fmt:
 	@echo "Formatting worksapce"
 	@cargo fmt
-	@dprint fmt
