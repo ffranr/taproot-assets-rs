@@ -2,7 +2,7 @@
 
 use risc0_zkvm::sha::Impl as Sha256Impl;
 use risc0_zkvm::sha::Sha256;
-use taproot_assets_core::verify::tx::{verify_tx_merkle_proof_input_with_hasher, MerkleHasher};
+use taproot_assets_core::verify::tx::{MerkleHasher, verify_tx_merkle_proof_input_with_hasher};
 
 /// Input for transaction merkle proof verification.
 pub type VerifyMerkleProofInput = taproot_assets_core::verify::tx::VerifyMerkleProofInput;

@@ -4009,7 +4009,7 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
 name = "taproot-assets"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "bitcoin",
  "taproot-assets-core",
@@ -4020,7 +4020,7 @@ dependencies = [
 
 [[package]]
 name = "taproot-assets-core"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "bitcoin",
  "hex",
@@ -4032,7 +4032,7 @@ dependencies = [
 
 [[package]]
 name = "taproot-assets-rpc"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "bincode 2.0.1",
  "bitcoin",
@@ -4054,7 +4054,7 @@ dependencies = [
 
 [[package]]
 name = "taproot-assets-types"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "bitcoin",
  "serde",
@@ -4063,7 +4063,7 @@ dependencies = [
 
 [[package]]
 name = "taproot-assets-zk-core"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "bitcoin",
  "risc0-zkvm",
@@ -4074,7 +4074,7 @@ dependencies = [
 
 [[package]]
 name = "taproot-assets-zk-verifier"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "bincode 2.0.1",

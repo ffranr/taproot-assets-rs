@@ -1,6 +1,6 @@
 //! Host helpers for building and encoding ZkProofFile artifacts.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use bincode::{
     config::standard,
     serde::{decode_from_slice, encode_to_vec},
@@ -9,10 +9,10 @@ use risc0_zkvm::{ExecutorEnv, Receipt};
 use taproot_assets_types as types;
 use taproot_assets_zk_core::verify::proof_chain::{ProofChainClaimInput, ProofChainClaimOutput};
 use taproot_assets_zk_core::verify::zk_proof_file::{
-    ZkProofFile, ZkProofFileEntry, ZK_PROOF_FILE_MAGIC,
+    ZK_PROOF_FILE_MAGIC, ZkProofFile, ZkProofFileEntry,
 };
 
-use crate::join::{prove_join_with_receipt, ClaimElfs};
+use crate::join::{ClaimElfs, prove_join_with_receipt};
 
 /// Proves all entries in a proof file and builds a ZkProofFile artifact.
 pub fn prove_zk_proof_file(

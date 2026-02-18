@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use taproot_assets_types as types;
 use taproot_assets_zk_core::verify::proof_chain::{
-    verify_proof_chain_claim, Error, ProofChainClaimInput, ProofChainEntryInput,
+    Error, ProofChainClaimInput, ProofChainEntryInput, verify_proof_chain_claim,
 };
 
 const PROOF_FILE_VECTOR: &str =
@@ -102,7 +102,7 @@ fn load_vector_file() -> Result<Option<types::proof::File>> {
 }
 
 fn hash_proof(proof_bytes: &[u8], prev_hash: [u8; 32]) -> [u8; 32] {
-    use bitcoin::hashes::{sha256, Hash};
+    use bitcoin::hashes::{Hash, sha256};
 
     let mut preimage = Vec::with_capacity(32 + proof_bytes.len());
     preimage.extend_from_slice(&prev_hash);

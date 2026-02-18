@@ -1,6 +1,6 @@
 [package]
 name = "taproot-assets-zk-core"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 publish = true
 
@@ -20,5 +20,5 @@ bitcoin = { version = "0.32.6", default-features = false, features = ["serde"] }
 risc0-zkvm = { version = "3.0.4", default-features = false }
 
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
-taproot-assets-core = { version = "0.0.1", path = "../../taproot-assets-core", default-features = false }
-taproot-assets-types = { version = "0.0.1", path = "../../taproot-assets-types", default-features = false }
+taproot-assets-core = { version = "0.0.2", path = "../../taproot-assets-core", default-features = false }
+taproot-assets-types = { version = "0.0.2", path = "../../taproot-assets-types", default-features = false }

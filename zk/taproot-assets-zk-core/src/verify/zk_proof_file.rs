@@ -12,7 +12,7 @@
 use alloc::vec::Vec;
 use core::fmt;
 
-use bitcoin::hashes::{sha256, Hash};
+use bitcoin::hashes::{Hash, sha256};
 use serde::{Deserialize, Serialize};
 
 use crate::verify::join::JoinOutput;

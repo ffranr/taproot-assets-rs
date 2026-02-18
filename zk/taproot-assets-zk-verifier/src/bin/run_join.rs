@@ -2,7 +2,7 @@ use anyhow::Result;
 use rayon::ThreadPoolBuilder;
 use risc0_zkvm::default_prover;
 use taproot_assets_types as types;
-use taproot_assets_zk_verifier::join::{default_elf_dir, ClaimElfs};
+use taproot_assets_zk_verifier::join::{ClaimElfs, default_elf_dir};
 use taproot_assets_zk_verifier::zk_proof_file::{encode_zk_proof_file_blob, prove_zk_proof_file};
 
 /// Runs claim provers for a full proof entry and joins them with the join prover.

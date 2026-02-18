@@ -1,6 +1,6 @@
 [package]
 name = "taproot-assets-zk-verifier"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 publish = true
 
@@ -13,10 +13,10 @@ readme = "README.md"
 repository = "https://github.com/ffranr/taproot-assets-rs"
 
 [dependencies]
-taproot-assets-rpc = { version = "0.0.1", path = "../../taproot-assets-rpc" }
-taproot-assets-types = { version = "0.0.1", path = "../../taproot-assets-types" }
-taproot-assets-zk-core = { version = "0.0.1", path = "../../zk/taproot-assets-zk-core" }
-taproot-assets-core = { version = "0.0.1", path = "../../taproot-assets-core" }
+taproot-assets-rpc = { version = "0.0.2", path = "../../taproot-assets-rpc" }
+taproot-assets-types = { version = "0.0.2", path = "../../taproot-assets-types" }
+taproot-assets-zk-core = { version = "0.0.2", path = "../../zk/taproot-assets-zk-core" }
+taproot-assets-core = { version = "0.0.2", path = "../../taproot-assets-core" }
 
 bitcoin = "0.32.6"
 
@@ -32,7 +32,7 @@ anyhow = "1.0"
 rayon = "1.10"
 
 [dev-dependencies]
-taproot-assets = { version = "0.0.1", path = "../../taproot-assets" }
+taproot-assets = { version = "0.0.2", path = "../../taproot-assets" }
 
 [[bin]]
 name = "run_anchor_claim"
